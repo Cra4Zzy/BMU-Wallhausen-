@@ -1,0 +1,72 @@
+name: Import BMU premium website
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/import-bmu.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import-site:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Verify and unpack the BMU website
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode site-package.b64 > /tmp/bmu-site.tar.xz
+          echo '54655250d3eedd4d411becd73c4c5b9dcb50094e78876d280b4cb3456dcd4d84  /tmp/bmu-site.tar.xz' | sha256sum --check
+          python3 - <<'PY'
+          import tarfile
+          from pathlib import Path
+
+          expected={
+              'index.html','maschinen.html','service.html',
+              'unternehmen.html','kontakt.html','README.txt',
+              'assets/style.css','assets/site.js',
+              'assets/bmu-original-screenshot.png','assets/bmu-logo-white.png'
+          }
+          with tarfile.open('/tmp/bmu-site.tar.xz','r:xz') as tar:
+              members=tar.getmembers()
+              if {m.name for m in members} != expected or len(members) != len(expected):
+                  raise SystemExit('Source package does not contain precisely the ten expected website files')
+              for member in members:
+                  if not member.isfile():
+                      raise SystemExit('Package contains an unsupported file: '+member.name)
+                  destination=Path(member.name)
+                  if destination.is_absolute() or '..' in destination.parts:
+                      raise SystemExit('Unsafe package path: '+member.name)
+                  destination.parent.mkdir(parents=True,exist_ok=True)
+                  destination.write_bytes(tar.extractfile(member).read())
+          for page in ('index','maschinen','service','unternehmen','kontakt'):
+              text=Path(page+'.html').read_text(encoding='utf-8')
+              for link in ('assets/style.css','assets/site.js'):
+                  if link not in text:
+                      raise SystemExit('Missing '+link+' reference in '+page)
+              if len(text)<4000:
+                  raise SystemExit('Unexpected short HTML page: '+page)
+          css=Path('assets/style.css').read_text(encoding='utf-8')
+          js=Path('assets/site.js').read_text(encoding='utf-8')
+          if len(css)<10000 or len(js)<1000:
+              raise SystemExit('CSS or JavaScript incomplete')
+          for png in Path('assets').glob('*.png'):
+              if not png.read_bytes().startswith(b'\x89PNG\r\n\x1a\n'):
+                  raise SystemExit('Invalid logo PNG: '+str(png))
+          print('Verified five pages, navigation assets, CSS, JavaScript and two PNG logos.')
+          PY
+      - name: Commit complete source to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html maschinen.html service.html unternehmen.html kontakt.html README.txt assets/
+          git rm site-package.b64
+          git diff --cached --check
+          git commit -m "feat: import complete BMU premium five-page responsive website"
+          git push origin HEAD:main
